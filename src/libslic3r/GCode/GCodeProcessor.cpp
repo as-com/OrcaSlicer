@@ -2478,6 +2478,13 @@ void GCodeProcessor::process_file(const std::string& filename, std::function<voi
             // thus a probability of incorrect substitution is low and the G-code viewer is a consumer-only anyways.
             config.load_from_gcode_file(filename, ForwardCompatibilitySubstitutionRule::EnableSilent);
 
+            // Get the correct printer vendor based on the `printer_model` field
+            auto printer_model_opt = config.opt<ConfigOptionString>("printer_model");
+            if (printer_model_opt && !printer_model_opt->value.empty()) {
+                // TODO: Orca hack, proper vendor check?
+                GCodeProcessor::s_IsBBLPrinter = boost::starts_with(printer_model_opt->value, "Bambu Lab");
+            }
+
             ConfigOptionStrings *filament_color = config.opt<ConfigOptionStrings>("filament_colour");
             ConfigOptionInts    *filament_map   = config.opt<ConfigOptionInts>("filament_map", true);
             if (filament_color && filament_color->size() != filament_map->size()) {
@@ -2554,6 +2561,28 @@ void GCodeProcessor::finalize(bool post_process)
 
     update_estimated_times_stats();
 
+    auto it = std::find_if(time_mode.roles_times.begin(), time_mode.roles_times.end(), [](const std::pair<ExtrusionRole, float>& item) { return erCustom == item.first; });
+    auto prepare_time = (it != time_mode.roles_times.end()) ? it->second : 0.0f;
+
+    std::vector<float>& layer_times = m_result.print_statistics.modes[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].layers_times;
+    m_result.initial_layer_time     = layer_times.size() > 0 ? std::max(float(0.0), layer_times[0] - prepare_time) : 0;
+
+    //update times for results
+    for (size_t i = 0; i < m_result.moves.size(); i++) {
+        //field layer_duration contains the layer id for the move in which the layer_duration has to be set.
+        size_t layer_id = size_t(m_result.moves[i].layer_duration);
+        if (layer_times.size() > layer_id - 1 && layer_id > 0)
+            m_result.moves[i].layer_duration = layer_id == 1 ? std::max(0.f,layer_times[layer_id - 1] - prepare_time) : layer_times[layer_id - 1];
+        else
+            m_result.moves[i].layer_duration = 0;
+    }
+
+#if ENABLE_GCODE_VIEWER_DATA_CHECKING
+    std::cout << "\n";
+    m_mm3_per_mm_compare.output();
+    m_height_compare.output();
+    m_width_compare.output();
+#endif // ENABLE_GCODE_VIEWER_DATA_CHECKING
     if (post_process){
         run_post_process();
     }
